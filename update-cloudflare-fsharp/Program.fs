@@ -159,7 +159,9 @@ let getCloudflareRecord (apiUrl: string) (recordType : string) (recordName : str
         match response.Body with
         | Text(body) -> body |> CloudflareResponseJson.Parse
         | _ -> failwith "Invalid JSON."
-    (responseBody.Result.[0].Id, responseBody.Result.[0].Content)
+    match responseBody.Result.Length with
+    | 0 -> None
+    | _ -> Some(responseBody.Result.[0].Id, responseBody.Result.[0].Content)
 
 let getPublicRecord (api : string) =
     let response = 
@@ -169,23 +171,40 @@ let getPublicRecord (api : string) =
 let updateRecord (recordType : string) (recordName : string) (domain : string) (newIP : string) (dry : bool) (force : bool) =
     writeCache recordType recordName domain newIP
     let dnsApiUrl = getApiUrl domain
-    let (record_id, ip) = getCloudflareRecord dnsApiUrl recordType recordName domain
-    if ip = newIP && (not force)
-    then printf "DNS record is the same as server IP"
-    else
+    //let (record_id, ip) = getCloudflareRecord dnsApiUrl recordType recordName domain
+    match getCloudflareRecord dnsApiUrl recordType recordName domain with
+    | Some(record_id, ip) ->
+        if ip = newIP && (not force)
+        then printf "DNS record is the same as server IP"
+        else
+            if dry then
+                printf "Dry Run: Update IP to %s" newIP
+            else
+                let body = CloudflareRequestBodyJson.Root(recordType, name=recordName, content=newIP, ttl=1).JsonValue.ToString()
+                let response = Http.Request
+                                (dnsApiUrl + "/" + record_id.ToString().Replace("-", ""),
+                                 body=TextRequest body,
+                                 httpMethod=HttpMethod.Put,
+                                 headers=[ HttpRequestHeaders.Authorization authHeader;
+                                           HttpRequestHeaders.ContentType HttpContentTypes.Json])
+                match response.StatusCode with
+                | 200 -> printf "Update successful"
+                | _ -> failwith "DNS update failed."
+    | None ->
         if dry then
-            printf "Dry Run: Update IP to %s" newIP
+            printf "Dry Run: Create %s record: %s" recordType newIP
         else
             let body = CloudflareRequestBodyJson.Root(recordType, name=recordName, content=newIP, ttl=1).JsonValue.ToString()
             let response = Http.Request
-                            (dnsApiUrl + "/" + record_id.ToString().Replace("-", ""),
+                            (dnsApiUrl,
                              body=TextRequest body,
-                             httpMethod=HttpMethod.Put,
+                             httpMethod=HttpMethod.Post,
                              headers=[ HttpRequestHeaders.Authorization authHeader;
                                        HttpRequestHeaders.ContentType HttpContentTypes.Json])
             match response.StatusCode with
             | 200 -> printf "Update successful"
             | _ -> failwith "DNS update failed."
+                
 
 let checkCache (recordType : string) (recordName : string) (domain : string) =
     let cacheFile = buildCacheFilename recordType recordName domain
@@ -193,9 +212,8 @@ let checkCache (recordType : string) (recordName : string) (domain : string) =
     | true -> Some((File.ReadAllText cacheFile).Trim())
     | false -> None
 
-let checkRecord (recordType : string) (recordName : string) (domain : string) (api : string) (dry : bool) (force : bool) =
+let checkRecord (recordType : string) (recordName : string) (domain : string) (pubRecord : string) (dry : bool) (force : bool) =
     let cache = checkCache recordType recordName domain
-    let pubRecord = getPublicRecord api
     let isValid =
         match recordType with
         | "A" -> pubRecord.Contains '.'
@@ -217,7 +235,7 @@ type CLIArguments =
     | Api of url:string
     | Api6 of url:string
     | [<Mandatory; AltCommandLine("-d")>] Domain of string
-    | [<AltCommandLine("-n"); Mandatory>] Record_Name of string
+    | [<AltCommandLine("-n"); Mandatory>] Record_Name of string list
     | Force
     | Dry
 
@@ -229,7 +247,7 @@ type CLIArguments =
             | Api _ -> "API to use for detecting IPv4 address."
             | Api6 _ -> "API to use for detecting IPv6 address."
             | Domain _ -> "Domain name to update."
-            | Record_Name _ -> "DNS record to update, e.g. www, subdomain, etc."
+            | Record_Name _ -> "DNS record(s) to update, e.g. www, subdomain, etc."
             | Dry -> "Dry run (does not update remote DNS)"
             | Force -> "Force update even if IP address is unchanged."
 
@@ -245,20 +263,27 @@ type Exiter() =
 let main argv =
     let parser = ArgumentParser.Create<CLIArguments>(programName = "update-godaddy.exe", errorHandler=Exiter())
     let results = parser.Parse(argv)
-    let recordNames = results.GetResults(Record_Name)
+    let recordNames = results.GetResult(Record_Name)
     let domain = results.GetResult(Domain)
     let dry = results.Contains Dry
     let force = results.Contains Force
-    let recordType =
-        if results.Contains Ipv6 then AAAA
-        else A
-    let api =
-        match recordType with
-        | A ->
-            results.GetResult(Api, defaultValue="https://api.ipify.org?format=json")
-        | AAAA ->
-            results.GetResult(Api6, defaultValue="https://api6.ipify.org?format=json")
+    let mutable recordTypes = []
+    if results.Contains Ipv6
+        then recordTypes <- AAAA :: recordTypes
+    if results.Contains Ipv4
+        then recordTypes <- A :: recordTypes
 
-    List.iter (fun rn -> checkRecord (recordType.ToString()) rn domain api dry force) recordNames
+    List.iter
+        (fun recType ->
+            let api = match recType with
+                      | A ->
+                            results.GetResult(Api, defaultValue="https://api.ipify.org?format=json")
+                      | AAAA ->
+                            results.GetResult(Api6, defaultValue="https://api6.ipify.org?format=json")
+            let pubRecord = getPublicRecord api
+            List.iter
+                (fun recordName -> checkRecord (recType.ToString()) recordName domain pubRecord dry force)
+                recordNames)
+        recordTypes
     
     0 // return an integer exit code
