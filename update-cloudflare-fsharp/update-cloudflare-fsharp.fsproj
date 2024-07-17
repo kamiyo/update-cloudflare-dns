@@ -16,13 +16,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Argu" Version="6.1.1" />
-    <PackageReference Include="dotenv.net" Version="3.1.0" />
-    <PackageReference Include="FSharp.Data" Version="4.2.2" />
+    <PackageReference Include="Argu" Version="6.2.4" />
+    <PackageReference Include="dotenv.net" Version="3.2.0" />
+    <PackageReference Include="FSharp.Data" Version="6.4.0" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Update="FSharp.Core" Version="5.0.3-beta.21352.5" />
+    <PackageReference Update="FSharp.Core" Version="8.0.301" />
   </ItemGroup>
 
 </Project>
